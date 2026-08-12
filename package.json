@@ -22,7 +22,8 @@
     "googleapis": "^174.0.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
-    "sqlite3": "^6.0.1"
+    "sqlite3": "^6.0.1",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/react": "^19.2.17",
@@ -31,5 +32,8 @@
     "concurrently": "^10.0.4",
     "oxlint": "^1.75.0",
     "vite": "^8.2.0"
+  },
+  "engines": {
+    "node": "22.22.0"
   }
 }

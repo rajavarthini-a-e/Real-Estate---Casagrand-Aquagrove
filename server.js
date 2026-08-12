@@ -160,7 +160,11 @@ async function initDb() {
 // --- SnapServe Config ---
 const SNAPSERVE_API_KEY = process.env.SNAPSERVE_API_KEY;
 const SNAPSERVE_BASE_URL = process.env.SNAPSERVE_BASE_URL || 'https://app.snapserve.ai/api';
-const SNAPSERVE_MCP_PATH = process.env.SNAPSERVE_MCP_PATH;
+const SNAPSERVE_MCP_PATH = process.env.SNAPSERVE_MCP_PATH 
+  ? (nodePath.isAbsolute(process.env.SNAPSERVE_MCP_PATH)
+      ? process.env.SNAPSERVE_MCP_PATH
+      : nodePath.resolve(__dirname, process.env.SNAPSERVE_MCP_PATH))
+  : nodePath.join(__dirname, 'snapserve-mcp/dist/index.js');
 const SNAPSERVE_LEAD_AGENT_ID = process.env.SNAPSERVE_LEAD_AGENT_ID || '596'; // Robert - Lead Qualifier
 const SNAPSERVE_MEETING_AGENT_ID = process.env.SNAPSERVE_MEETING_AGENT_ID || '597'; // Samuel - Meeting Scheduler
 

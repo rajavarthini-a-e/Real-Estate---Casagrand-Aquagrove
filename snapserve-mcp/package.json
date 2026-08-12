@@ -1,0 +1,20 @@
+{
+  "name": "@thinkcreator/snapserve-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SnapServe MCP server for ThinkCreator Academy",
+  "main": "dist/index.js",
+  "bin": {
+    "snapserve-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
