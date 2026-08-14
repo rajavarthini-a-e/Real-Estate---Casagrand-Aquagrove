@@ -1450,158 +1450,161 @@ app.get('/api/admin/calls/:callId', async (req, res) => {
 
 // POST /api/leads
 app.post('/api/leads', async (req, res) => {
-  const { name, phone, email, location, lookingFor, propertyType, bedrooms, budget, callbackTime } = req.body;
-  
-  if (!name || !phone || !email || !location) {
-    return res.status(400).json({ success: false, error: 'Name, phone, email, and location are required.' });
-  }
-
-  // --- Duplicate Prevention ---
   try {
-    const existing = await dbGet(
-      "SELECT * FROM LEADS WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
-      [phone]
-    );
-    if (existing) {
-      const elapsedMs = Date.now() - new Date(existing.created_at).getTime();
-      if (elapsedMs < 60000) { // 1 minute duplicate protection window
-        console.log(`[LEAD] Lead already exists with Call ID ${existing.snapserve_call_id}. Duplicate trigger prevented.`);
-        return res.json({
-          success: true,
-          message: 'Lead already exists and call is already triggered.',
-          lead: normalizeLead(existing),
-          triggerSuccess: true
-        });
-      }
+    const { name, phone, email, location, lookingFor, propertyType, bedrooms, budget, callbackTime } = req.body;
+    
+    if (!name || !phone || !email || !location) {
+      return res.status(400).json({ success: false, error: 'Name, phone, email, and location are required.' });
     }
-  } catch (err) {
-    console.error('[LEAD] Duplicate check error:', err.message);
-  }
 
-  const id = `lead-${Date.now()}`;
-  const createdAt = new Date().toISOString();
-  console.log(`[LEAD] Created lead ID: ${id}`);
+    // --- Duplicate Prevention ---
+    try {
+      const existing = await dbGet(
+        "SELECT * FROM LEADS WHERE phone = ? ORDER BY created_at DESC LIMIT 1",
+        [phone]
+      );
+      if (existing) {
+        const elapsedMs = Date.now() - new Date(existing.created_at).getTime();
+        if (elapsedMs < 60000) { // 1 minute duplicate protection window
+          console.log(`[LEAD] Lead already exists with Call ID ${existing.snapserve_call_id}. Duplicate trigger prevented.`);
+          return res.json({
+            success: true,
+            message: 'Lead already exists and call is already triggered.',
+            lead: normalizeLead(existing),
+            triggerSuccess: true
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[LEAD] Duplicate check error:', err.message);
+    }
 
-  // Format combined property requirements
-  const requirementStr = `${lookingFor || 'Buy'} — ${bedrooms || '2 BHK'} ${propertyType || 'Apartment'}, ${budget || 'Below ₹50 Lakhs'} (Callback: ${callbackTime || 'Evening'})`;
+    const id = `lead-${Date.now()}`;
+    const createdAt = new Date().toISOString();
+    console.log(`[LEAD] Created lead ID: ${id}`);
 
-  // 1. Immediately save lead to database (NEW, PENDING)
-  try {
+    // Format combined property requirements
+    const requirementStr = `${lookingFor || 'Buy'} — ${bedrooms || '2 BHK'} ${propertyType || 'Apartment'}, ${budget || 'Below ₹50 Lakhs'} (Callback: ${callbackTime || 'Evening'})`;
+
+    // 1. Immediately save lead to database (NEW, PENDING)
     await dbRun(
       `INSERT INTO LEADS (id, name, phone, email, location, requirement, lead_status, call_status, meeting_status, interested, snapserve_lead_agent_id, snapserve_meeting_agent_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, 'NEW', 'PENDING', 'NOT_BOOKED', 0, ?, ?, ?, ?)`,
       [id, name, phone, email, location, requirementStr, SNAPSERVE_LEAD_AGENT_ID, SNAPSERVE_MEETING_AGENT_ID, createdAt, createdAt]
     );
-  } catch (err) {
-    console.error('[LEAD] Save failed:', err.message);
-    return res.status(500).json({ success: false, error: 'Database error' });
-  }
 
-  const tempLead = {
-    id,
-    name,
-    phone,
-    email,
-    location,
-    requirement: requirementStr,
-    lookingFor: lookingFor || 'Buy',
-    propertyType: propertyType || 'Apartment',
-    bedrooms: bedrooms || '2 BHK',
-    budget: budget || 'Below ₹50 Lakhs',
-    preferredCallbackTime: callbackTime || 'Evening'
-  };
+    const tempLead = {
+      id,
+      name,
+      phone,
+      email,
+      location,
+      requirement: requirementStr,
+      lookingFor: lookingFor || 'Buy',
+      propertyType: propertyType || 'Apartment',
+      bedrooms: bedrooms || '2 BHK',
+      budget: budget || 'Below ₹50 Lakhs',
+      preferredCallbackTime: callbackTime || 'Evening'
+    };
 
-  const tempCallId = `temp-call-${Date.now()}`;
-  
-  // Create initial log details placeholder with status TRIGGERED
-  try {
-    const logId = `log-${Date.now()}`;
-    await dbRun(
-      `INSERT INTO CALL_LOGS (id, lead_id, snapserve_call_id, agent_id, agent_name, status, duration, started_at, ended_at, summary, transcript, recording_url, raw_snapserve_data, created_at, updated_at)
-       VALUES (?, ?, ?, ?, 'Robert', 'TRIGGERED', NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
-      [logId, id, tempCallId, SNAPSERVE_LEAD_AGENT_ID, new Date().toISOString(), new Date().toISOString()]
-    );
+    const tempCallId = `temp-call-${Date.now()}`;
     
-    await dbRun(
-      `UPDATE LEADS SET call_status = 'TRIGGERED', snapserve_call_id = ?, updated_at = ? WHERE id = ?`,
-      [tempCallId, new Date().toISOString(), id]
-    );
-    console.log(`[DATABASE] Lead ${id} call status initialized to TRIGGERED with placeholder ID ${tempCallId}`);
-  } catch (err) {
-    console.error('[LEAD] Failed to initialize call logs placeholder:', err.message);
-  }
-
-  // 2. Perform Webhook submission and Robert call trigger asynchronously in the background
-  (async () => {
+    // Create initial log details placeholder with status TRIGGERED
     try {
-      // Submit lead to the official SnapServe Lead Capture Webhook
-      const webhookUrl = 'https://app.snapserve.ai/api/webhooks/lead/bff65d58-e26d-45ac-9c01-a16c60265018';
-      const formattedPhone = formatToE164(phone);
-      console.log(`[LEAD ASYNC] Submitting to lead capture: name="${name}", phone="${formattedPhone}", email="${email}"`);
+      const logId = `log-${Date.now()}`;
+      await dbRun(
+        `INSERT INTO CALL_LOGS (id, lead_id, snapserve_call_id, agent_id, agent_name, status, duration, started_at, ended_at, summary, transcript, recording_url, raw_snapserve_data, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'Robert', 'TRIGGERED', NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`,
+        [logId, id, tempCallId, SNAPSERVE_LEAD_AGENT_ID, new Date().toISOString(), new Date().toISOString()]
+      );
       
-      const webhookRes = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          phone: formattedPhone,
-          name: name,
-          email: email
-        })
-      });
-      console.log(`[LEAD ASYNC] Webhook Response: ${webhookRes.status} ${webhookRes.statusText}`);
+      await dbRun(
+        `UPDATE LEADS SET call_status = 'TRIGGERED', snapserve_call_id = ?, updated_at = ? WHERE id = ?`,
+        [tempCallId, new Date().toISOString(), id]
+      );
+      console.log(`[DATABASE] Lead ${id} call status initialized to TRIGGERED with placeholder ID ${tempCallId}`);
     } catch (err) {
-      console.error(`[LEAD ASYNC ERROR] Failed to send lead to webhook:`, err.message);
+      console.error('[LEAD] Failed to initialize call logs placeholder:', err.message);
     }
 
-    try {
-      console.log(`[LEAD ASYNC] Triggering Robert outbound call...`);
-      const triggerRes = await triggerSnapServeCall(phone, tempLead);
-      const actualCallId = triggerRes.id || triggerRes.callId || triggerRes.executionId || null;
-      
-      if (actualCallId) {
-        console.log(`[LEAD ASYNC] Robert call triggered successfully. Call ID: ${actualCallId}`);
+    // 2. Perform Webhook submission and Robert call trigger asynchronously in the background
+    (async () => {
+      try {
+        // Submit lead to the official SnapServe Lead Capture Webhook
+        const webhookUrl = 'https://app.snapserve.ai/api/webhooks/lead/bff65d58-e26d-45ac-9c01-a16c60265018';
+        const formattedPhone = formatToE164(phone);
+        console.log(`[LEAD ASYNC] Submitting to lead capture: name="${name}", phone="${formattedPhone}", email="${email}"`);
         
-        // Update database with the actual call ID
-        await dbRun(
-          `UPDATE LEADS SET snapserve_call_id = ?, updated_at = ? WHERE id = ?`,
-          [actualCallId, new Date().toISOString(), id]
-        );
-        
-        // Update call log placeholder with the actual call ID
-        await dbRun(
-          `UPDATE CALL_LOGS SET snapserve_call_id = ?, updated_at = ? WHERE lead_id = ? AND snapserve_call_id = ?`,
-          [actualCallId, new Date().toISOString(), id, tempCallId]
-        );
+        const webhookRes = await fetch(webhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            phone: formattedPhone,
+            name: name,
+            email: email
+          })
+        });
+        console.log(`[LEAD ASYNC] Webhook Response: ${webhookRes.status} ${webhookRes.statusText}`);
+      } catch (err) {
+        console.error(`[LEAD ASYNC ERROR] Failed to send lead to webhook:`, err.message);
+      }
 
-        // Start background polling for the actual call ID
-        startCallPolling(id, actualCallId, phone);
-      } else {
-        console.warn(`[LEAD ASYNC WARNING] No actual call ID returned for Robert trigger. Reverting.`);
+      try {
+        console.log(`[LEAD ASYNC] Triggering Robert outbound call...`);
+        const triggerRes = await triggerSnapServeCall(phone, tempLead);
+        const actualCallId = triggerRes.id || triggerRes.callId || triggerRes.executionId || null;
+        
+        if (actualCallId) {
+          console.log(`[LEAD ASYNC] Robert call triggered successfully. Call ID: ${actualCallId}`);
+          
+          // Update database with the actual call ID
+          await dbRun(
+            `UPDATE LEADS SET snapserve_call_id = ?, updated_at = ? WHERE id = ?`,
+            [actualCallId, new Date().toISOString(), id]
+          );
+          
+          // Update call log placeholder with the actual call ID
+          await dbRun(
+            `UPDATE CALL_LOGS SET snapserve_call_id = ?, updated_at = ? WHERE lead_id = ? AND snapserve_call_id = ?`,
+            [actualCallId, new Date().toISOString(), id, tempCallId]
+          );
+
+          // Start background polling for the actual call ID
+          startCallPolling(id, actualCallId, phone);
+        } else {
+          console.warn(`[LEAD ASYNC WARNING] No actual call ID returned for Robert trigger. Reverting.`);
+          await dbRun(
+            `UPDATE LEADS SET call_status = 'FAILED', updated_at = ? WHERE id = ?`,
+            [new Date().toISOString(), id]
+          );
+        }
+      } catch (err) {
+        console.error(`[LEAD ASYNC ERROR] Failed to trigger Robert's call:`, err.message);
         await dbRun(
           `UPDATE LEADS SET call_status = 'FAILED', updated_at = ? WHERE id = ?`,
           [new Date().toISOString(), id]
         );
       }
-    } catch (err) {
-      console.error(`[LEAD ASYNC ERROR] Failed to trigger Robert's call:`, err.message);
-      await dbRun(
-        `UPDATE LEADS SET call_status = 'FAILED', updated_at = ? WHERE id = ?`,
-        [new Date().toISOString(), id]
-      );
-    }
-  })().catch(err => console.error('[LEAD ASYNC CRITICAL ERROR]:', err));
+    })().catch(err => console.error('[LEAD ASYNC CRITICAL ERROR]:', err));
 
-  // Retrieve saved lead from DB to send as response
-  const savedLead = await dbGet('SELECT * FROM LEADS WHERE id = ?', [id]);
-  const normalizedSavedLead = normalizeLead(savedLead);
+    // Retrieve saved lead from DB to send as response
+    const savedLead = await dbGet('SELECT * FROM LEADS WHERE id = ?', [id]);
+    const normalizedSavedLead = normalizeLead(savedLead);
 
-  // Return success response to client immediately
-  res.json({
-    success: true,
-    message: 'Lead saved and call trigger initiated successfully',
-    lead: normalizedSavedLead,
-    triggerSuccess: true
-  });
+    // Return success response to client immediately
+    return res.json({
+      success: true,
+      message: 'Lead saved and call trigger initiated successfully',
+      lead: normalizedSavedLead,
+      triggerSuccess: true
+    });
+  } catch (error) {
+    console.error('[LEAD] Lead submission error:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'An internal server error occurred while processing lead'
+    });
+  }
 });
 
 // POST /api/leads/:id/status (to support manual overrides in dashboard)

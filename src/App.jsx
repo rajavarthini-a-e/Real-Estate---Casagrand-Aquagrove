@@ -113,10 +113,24 @@ function App() {
         body: JSON.stringify(formData),
       });
 
-      const result = await res.json();
+      let result = null;
+      const contentType = res.headers.get('content-type');
+      if (contentType && contentType.includes('application/json')) {
+        try {
+          result = await res.json();
+        } catch (jsonErr) {
+          console.error('Failed to parse JSON response:', jsonErr);
+        }
+      }
 
       if (!res.ok) {
-        throw new Error(result.message || result.error || 'Failed to submit enquiry');
+        const errorMsg = (result && (result.message || result.error)) 
+          || `Server error (status ${res.status}): ${res.statusText || 'Unable to connect to the backend API'}`;
+        throw new Error(errorMsg);
+      }
+
+      if (!result || !result.success) {
+        throw new Error((result && result.message) || 'Received invalid response format from the server.');
       }
 
       setFormSubmitted(true);
